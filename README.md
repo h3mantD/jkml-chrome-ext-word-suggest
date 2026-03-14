@@ -8,6 +8,7 @@ This extension shows quick word suggestions for the current BombParty chunk.
 - Matches words from a local dictionary (`data/words.txt`).
 - Shows suggestions in a floating panel.
 - Lets you configure settings from the extension popup.
+- Keeps the panel hidden by default for safer screen sharing.
 
 ## Files
 
@@ -31,14 +32,21 @@ This extension shows quick word suggestions for the current BombParty chunk.
   - show/hide panel on page
   - max suggestions
   - minimum word length
-- Press `Option+J` in the game to show/hide panel quickly.
-- Press `Option+R` in the game to force-refresh chunk detection.
-- Press `Esc` to instantly hide the panel (panic hide).
+- Keyboard shortcuts:
+  - `Option+J` -> show/hide panel
+  - `Option+R` -> force-refresh chunk detection and suggestions
+  - `Esc` -> panic hide panel instantly
 - Click a suggested word to copy it.
 
 ## Notes
 
 - BombParty runs inside an iframe (`https://falcon.jklm.fun/games/bombparty`), so host permissions include both domains.
 - The chunk detector uses resilient fallback logic because JKLM classes can change.
+- Copy uses async clipboard when allowed, and automatically falls back to `execCommand("copy")` when iframe permissions policy blocks Clipboard API.
 - You can replace `data/words.txt` with a larger custom dictionary (one word per line).
-# jkml-chrome-ext-word-suggest
+
+## Troubleshooting
+
+- If updates seem stuck when letters change, press `Option+R` for manual refresh.
+- If copy fails, click again after focusing the game tab; the fallback copy path should still work in restricted iframe contexts.
+- After changing extension files, always reload the extension in `chrome://extensions` and refresh the JKLM tab.
