@@ -1,0 +1,66 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-width: 260px;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  background: linear-gradient(180deg, #f5f8fb, #e9eef3);
+  color: #1d2a36;
+}
+
+main {
+  padding: 12px;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  color: #0f304f;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.checkboxRow {
+  justify-content: flex-start;
+}
+
+input[type="number"] {
+  width: 80px;
+  padding: 4px 6px;
+}
+
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-weight: 600;
+  background: #1f6cad;
+  color: #fff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #16588f;
+}
+
+#status {
+  min-height: 1em;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #305170;
+}

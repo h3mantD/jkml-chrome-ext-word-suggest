@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "JKLM BombParty Helper",
+  "version": "0.1.0",
+  "description": "Shows word suggestions for the current BombParty chunk.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://jklm.fun/*",
+    "https://falcon.jklm.fun/*"
+  ],
+  "action": {
+    "default_title": "BombParty Helper",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://jklm.fun/*",
+        "https://falcon.jklm.fun/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "data/words.txt"
+      ],
+      "matches": [
+        "https://jklm.fun/*",
+        "https://falcon.jklm.fun/*"
+      ]
+    }
+  ]
+}

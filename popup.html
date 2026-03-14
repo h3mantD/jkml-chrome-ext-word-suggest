@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BombParty Helper</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>BombParty Helper</h1>
+
+      <label class="row checkboxRow">
+        <input id="enabled" type="checkbox">
+        <span>Enable helper</span>
+      </label>
+
+      <label class="row checkboxRow">
+        <input id="panelVisible" type="checkbox">
+        <span>Show panel on page</span>
+      </label>
+
+      <label class="row" for="maxSuggestions">
+        <span>Max suggestions</span>
+        <input id="maxSuggestions" type="number" min="1" max="50" step="1">
+      </label>
+
+      <label class="row" for="minWordLength">
+        <span>Min word length</span>
+        <input id="minWordLength" type="number" min="2" max="20" step="1">
+      </label>
+
+      <button id="reset" type="button">Reset defaults</button>
+      <p id="status" aria-live="polite"></p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
