@@ -231,7 +231,7 @@
 
     const hint = document.createElement("div");
     hint.className = "hint";
-    hint.textContent = "Option+J show/hide • Option+R refresh • Esc hide";
+    hint.textContent = "Ctrl+Shift+J show/hide • Ctrl+Shift+K refresh • Esc hide";
 
     state.panel.appendChild(header);
     state.panel.appendChild(chunkLine);
@@ -245,7 +245,7 @@
     window.addEventListener(
       "keydown",
       (event) => {
-        const isTogglePanel = event.altKey && event.code === "KeyJ";
+        const isTogglePanel = event.ctrlKey && event.shiftKey && event.code === "KeyJ";
         if (isTogglePanel) {
           event.preventDefault();
           event.stopPropagation();
@@ -263,7 +263,7 @@
           return;
         }
 
-        const isManualRefresh = event.altKey && event.code === "KeyR";
+        const isManualRefresh = event.ctrlKey && event.shiftKey && event.code === "KeyK";
         if (isManualRefresh) {
           event.preventDefault();
           event.stopPropagation();

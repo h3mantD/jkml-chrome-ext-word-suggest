@@ -33,8 +33,8 @@ This extension shows quick word suggestions for the current BombParty chunk.
   - max suggestions
   - minimum word length
 - Keyboard shortcuts:
-  - `Option+J` -> show/hide panel
-  - `Option+R` -> force-refresh chunk detection and suggestions
+  - `Ctrl+Shift+J` -> show/hide panel
+  - `Ctrl+Shift+K` -> force-refresh chunk detection and suggestions
   - `Esc` -> panic hide panel instantly
 - Click a suggested word to copy it.
 
@@ -47,6 +47,6 @@ This extension shows quick word suggestions for the current BombParty chunk.
 
 ## Troubleshooting
 
-- If updates seem stuck when letters change, press `Option+R` for manual refresh.
+- If updates seem stuck when letters change, press `Ctrl+Shift+K` for manual refresh.
 - If copy fails, click again after focusing the game tab; the fallback copy path should still work in restricted iframe contexts.
 - After changing extension files, always reload the extension in `chrome://extensions` and refresh the JKLM tab.
