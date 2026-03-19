@@ -1,17 +1,22 @@
 (() => {
-  const isFalconHost = window.location.hostname === "falcon.jklm.fun";
+  const extensionStorage = getExtensionStorage();
+  const isJklmSubdomain = /(^|\.)jklm\.fun$/.test(window.location.hostname);
   const isBombPartyPath = window.location.pathname.includes("/games/bombparty");
-
-  if (!isFalconHost || !isBombPartyPath) {
-    return;
-  }
+  const isBombPartyFrame = isJklmSubdomain && isBombPartyPath;
 
   const DEFAULT_SETTINGS = {
     enabled: true,
     panelVisible: false,
+    autoHideOnBlur: true,
+    filterUsedWords: true,
     maxSuggestions: 12,
     minWordLength: 3
   };
+
+  if (!isBombPartyFrame) {
+    bindBridgeHotkeys();
+    return;
+  }
 
   const state = {
     settings: { ...DEFAULT_SETTINGS },
@@ -23,6 +28,16 @@
     loaded: false,
     timerId: null,
     observer: null,
+    syllableObserver: null,
+    syllableElement: null,
+    pollTimerId: null,
+    lockedChunkElement: null,
+    lockMisses: 0,
+    scanCount: 0,
+    mutationCandidate: null,
+    networkCandidate: null,
+    usedWords: new Set(),
+    hiddenByBlur: false,
     panel: null,
     chunkValue: null,
     statusValue: null,
@@ -35,9 +50,11 @@
 
   async function init() {
     state.settings = await readSettings();
-    createPanel();
+    startNetworkHooks();
     bindHotkeys();
     bindStorageListener();
+    await waitForBody();
+    createPanel();
     await loadDictionary();
     startObservers();
     scheduleScan();
@@ -45,14 +62,22 @@
 
   function readSettings() {
     return new Promise((resolve) => {
-      chrome.storage.local.get(DEFAULT_SETTINGS, (result) => {
+      if (!extensionStorage) {
+        resolve({ ...DEFAULT_SETTINGS });
+        return;
+      }
+
+      extensionStorage.get(DEFAULT_SETTINGS, (result) => {
         resolve({ ...DEFAULT_SETTINGS, ...result });
       });
     });
   }
 
   function writeSettings(next) {
-    chrome.storage.local.set(next);
+    if (!extensionStorage) {
+      return;
+    }
+    extensionStorage.set(next);
   }
 
   async function loadDictionary() {
@@ -231,7 +256,7 @@
 
     const hint = document.createElement("div");
     hint.className = "hint";
-    hint.textContent = "Ctrl+Shift+J show/hide • Ctrl+Shift+K refresh • Esc hide";
+    hint.textContent = "Ctrl/Cmd+Shift+X show/hide • Ctrl/Cmd+Shift+K refresh • Ctrl/Cmd+Shift+U clear used";
 
     state.panel.appendChild(header);
     state.panel.appendChild(chunkLine);
@@ -245,7 +270,7 @@
     window.addEventListener(
       "keydown",
       (event) => {
-        const isTogglePanel = event.ctrlKey && event.shiftKey && event.code === "KeyJ";
+        const isTogglePanel = isHotkey(event, "KeyX") || isHotkey(event, "KeyJ");
         if (isTogglePanel) {
           event.preventDefault();
           event.stopPropagation();
@@ -263,7 +288,7 @@
           return;
         }
 
-        const isManualRefresh = event.ctrlKey && event.shiftKey && event.code === "KeyK";
+        const isManualRefresh = isHotkey(event, "KeyK");
         if (isManualRefresh) {
           event.preventDefault();
           event.stopPropagation();
@@ -273,6 +298,61 @@
               ? `Refreshed: ${state.currentChunk}`
               : "Refresh: no chunk found";
           }
+          return;
+        }
+
+        const isClearUsed = isHotkey(event, "KeyU");
+        if (isClearUsed) {
+          event.preventDefault();
+          event.stopPropagation();
+          state.usedWords.clear();
+          state.statusValue.textContent = "Cleared used words";
+          render(true);
+        }
+      },
+      true
+    );
+  }
+
+  function isHotkey(event, code) {
+    const usesCtrlShift = event.ctrlKey && event.shiftKey;
+    const usesCmdShift = event.metaKey && event.shiftKey;
+    return (usesCtrlShift || usesCmdShift) && !event.altKey && event.code === code;
+  }
+
+  function bindBridgeHotkeys() {
+    window.addEventListener(
+      "keydown",
+      (event) => {
+        const isTogglePanel = isHotkey(event, "KeyX") || isHotkey(event, "KeyJ");
+        if (isTogglePanel) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!extensionStorage) {
+            return;
+          }
+
+          extensionStorage.get(DEFAULT_SETTINGS, (settings) => {
+            extensionStorage.set({ panelVisible: !settings.panelVisible });
+          });
+          return;
+        }
+
+        if (isHotkey(event, "KeyK")) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!extensionStorage) {
+            return;
+          }
+
+          extensionStorage.set({ manualRefreshToken: Date.now(), panelVisible: true });
+          return;
+        }
+
+        if (isHotkey(event, "KeyU")) {
+          event.preventDefault();
+          event.stopPropagation();
+          extensionStorage.set({ clearUsedWordsToken: Date.now() });
         }
       },
       true
@@ -280,6 +360,10 @@
   }
 
   function bindStorageListener() {
+    if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.onChanged) {
+      return;
+    }
+
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "local") {
         return;
@@ -287,11 +371,21 @@
 
       let changed = false;
 
-      for (const key of ["enabled", "panelVisible", "maxSuggestions", "minWordLength"]) {
+      for (const key of ["enabled", "panelVisible", "autoHideOnBlur", "filterUsedWords", "maxSuggestions", "minWordLength"]) {
         if (changes[key]) {
           state.settings[key] = changes[key].newValue;
           changed = true;
         }
+      }
+
+      if (changes.manualRefreshToken) {
+        scanChunk(true);
+        changed = true;
+      }
+
+      if (changes.clearUsedWordsToken) {
+        state.usedWords.clear();
+        changed = true;
       }
 
       if (changed) {
@@ -301,33 +395,102 @@
   }
 
   function startObservers() {
-    state.observer = new MutationObserver(() => {
+    state.observer = new MutationObserver((records) => {
+      captureMutationCandidate(records);
+      captureUsedWords(records);
+      ensureSyllableWatcher();
       scheduleScan();
     });
 
     state.observer.observe(document.body, {
       childList: true,
       subtree: true,
-      characterData: true
+      characterData: true,
+      attributes: true
     });
 
     window.addEventListener("resize", scheduleScan);
-    window.setInterval(scheduleScan, 1200);
+    document.addEventListener("visibilitychange", () => {
+      applyAutoHideByVisibility();
+      scheduleScan();
+    });
+    window.addEventListener("focus", () => {
+      scheduleScan();
+    });
+    window.addEventListener("blur", () => {
+      applyAutoHideByVisibility();
+      scheduleScan();
+    });
+    document.addEventListener(
+      "input",
+      () => {
+        ensureSyllableWatcher();
+        scheduleScan(10);
+      },
+      true
+    );
+
+    ensureSyllableWatcher();
+    startAdaptivePolling();
   }
 
-  function scheduleScan() {
+  function applyAutoHideByVisibility() {
+    if (!state.settings.autoHideOnBlur) {
+      return;
+    }
+
+    const shouldHide = document.hidden || !document.hasFocus();
+    if (!shouldHide || !state.settings.panelVisible) {
+      return;
+    }
+
+    state.hiddenByBlur = true;
+    state.settings.panelVisible = false;
+    writeSettings({ panelVisible: false });
+    render(true);
+  }
+
+  function startAdaptivePolling() {
+    if (state.pollTimerId !== null) {
+      window.clearTimeout(state.pollTimerId);
+    }
+
+    const tick = () => {
+      ensureSyllableWatcher();
+      scheduleScan(20);
+      state.pollTimerId = window.setTimeout(tick, getPollDelay());
+    };
+
+    state.pollTimerId = window.setTimeout(tick, getPollDelay());
+  }
+
+  function getPollDelay() {
+    if (document.hidden) {
+      return 900;
+    }
+
+    if (document.hasFocus()) {
+      return 120;
+    }
+
+    return 260;
+  }
+
+  function scheduleScan(delay = 80) {
     if (state.timerId !== null) {
       window.clearTimeout(state.timerId);
     }
 
     state.timerId = window.setTimeout(() => {
       state.timerId = null;
-      scanChunk();
-    }, 80);
+      scanChunk(true);
+    }, delay);
   }
 
   function scanChunk(force = false) {
-    const nextChunk = findChunk();
+    state.scanCount += 1;
+    const forceFreshLookup = force || state.scanCount % 5 === 0;
+    const nextChunk = findChunk(forceFreshLookup);
     if (!force && nextChunk === state.currentChunk) {
       return;
     }
@@ -336,26 +499,375 @@
     render(force);
   }
 
-  function findChunk() {
+  function ensureSyllableWatcher() {
+    const element = document.querySelector(".syllable");
+    if (!(element instanceof HTMLElement) || !isElementVisible(element)) {
+      return;
+    }
+
+    if (state.syllableElement === element) {
+      return;
+    }
+
+    if (state.syllableObserver) {
+      state.syllableObserver.disconnect();
+    }
+
+    state.syllableElement = element;
+    state.lockedChunkElement = element;
+
+    state.syllableObserver = new MutationObserver(() => {
+      handleSyllableElementUpdate();
+    });
+
+    state.syllableObserver.observe(element, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true
+    });
+
+    handleSyllableElementUpdate();
+  }
+
+  function handleSyllableElementUpdate() {
+    const element = state.syllableElement;
+    if (!(element instanceof HTMLElement) || !element.isConnected) {
+      return;
+    }
+
+    const chunk = sanitizeChunk(element.textContent) || bestChunkToken(element.textContent);
+    if (!chunk) {
+      return;
+    }
+
+    state.mutationCandidate = {
+      chunk,
+      score: 14,
+      element,
+      at: Date.now()
+    };
+
+    if (chunk !== state.currentChunk) {
+      state.currentChunk = chunk;
+      render(true);
+    }
+  }
+
+  function captureUsedWords(records) {
+    for (const record of records) {
+      if (record.type !== "childList") {
+        continue;
+      }
+
+      for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement)) {
+          continue;
+        }
+
+        for (const word of extractPlayedWords(node)) {
+          state.usedWords.add(word);
+        }
+      }
+    }
+
+    if (state.usedWords.size > 4000) {
+      state.usedWords = new Set(Array.from(state.usedWords).slice(-2500));
+    }
+  }
+
+  function extractPlayedWords(root) {
+    const found = new Set();
+    const nodes = [root, ...root.querySelectorAll("[class]")];
+
+    for (const node of nodes) {
+      const cls = String(node.className || "").toLowerCase();
+      const isWordLikeClass = cls.includes("word") && !cls.includes("words");
+      if (!isWordLikeClass) {
+        continue;
+      }
+
+      const tokens = String(node.textContent || "").toLowerCase().match(/[a-z][a-z'-]{1,30}/g) || [];
+      for (const token of tokens) {
+        const clean = sanitizePlayedWord(token);
+        if (clean) {
+          found.add(clean);
+        }
+      }
+    }
+
+    return found;
+  }
+
+  function sanitizePlayedWord(token) {
+    const clean = token.replace(/[^a-z'-]/g, "").toLowerCase();
+    if (!/^[a-z][a-z'-]{1,30}$/.test(clean)) {
+      return "";
+    }
+    return clean;
+  }
+
+  function findChunk(forceFreshLookup = false) {
+    const lockedCandidate = forceFreshLookup ? null : readLockedChunkCandidate();
+    const mutationCandidate = readMutationCandidate();
+    const networkCandidate = readNetworkCandidate();
+
     const directCandidate = findDirectElementCandidate();
     const fallbackCandidate = findBestTextCandidate();
 
-    if (directCandidate && fallbackCandidate) {
-      return directCandidate.score >= fallbackCandidate.score ? directCandidate.chunk : fallbackCandidate.chunk;
+    const freshWinner = pickBestCandidate([directCandidate, fallbackCandidate]);
+    const winner = pickBestCandidate([networkCandidate, mutationCandidate, lockedCandidate, freshWinner]);
+
+    if (!winner) {
+      state.lockedChunkElement = null;
+      state.lockMisses = 0;
+      return "";
     }
 
-    if (directCandidate) {
-      return directCandidate.chunk;
+    if (winner.element instanceof HTMLElement) {
+      state.lockedChunkElement = winner.element;
+      state.lockMisses = 0;
+    } else {
+      state.lockMisses += 1;
+      if (state.lockMisses > 4) {
+        state.lockedChunkElement = null;
+      }
     }
 
-    if (fallbackCandidate) {
-      return fallbackCandidate.chunk;
+    return winner.chunk;
+  }
+
+  function readMutationCandidate() {
+    if (!state.mutationCandidate) {
+      return null;
+    }
+
+    if (Date.now() - state.mutationCandidate.at > 2200) {
+      state.mutationCandidate = null;
+      return null;
+    }
+
+    return state.mutationCandidate;
+  }
+
+  function readNetworkCandidate() {
+    if (!state.networkCandidate) {
+      return null;
+    }
+
+    if (Date.now() - state.networkCandidate.at > 2800) {
+      state.networkCandidate = null;
+      return null;
+    }
+
+    return state.networkCandidate;
+  }
+
+  function startNetworkHooks() {
+    if (!window.__jkmlHelperBridgeListenerBound) {
+      window.addEventListener("message", onBridgeMessage);
+      window.__jkmlHelperBridgeListenerBound = true;
+    }
+
+    if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.getURL) {
+      return;
+    }
+
+    if (document.getElementById("jkml-helper-page-bridge")) {
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = "jkml-helper-page-bridge";
+    script.src = chrome.runtime.getURL("page-bridge.js");
+    script.async = false;
+
+    const target = document.head || document.documentElement;
+    target.appendChild(script);
+    script.remove();
+  }
+
+  function onBridgeMessage(event) {
+    if (event.source !== window || !event.data || typeof event.data !== "object") {
+      return;
+    }
+
+    if (event.data.source !== "jkml-helper-bridge" || event.data.type !== "chunk") {
+      return;
+    }
+
+    const chunk = sanitizeChunk(event.data.chunk);
+    if (!chunk) {
+      return;
+    }
+
+    const score = Number(event.data.score);
+
+    state.networkCandidate = {
+      chunk,
+      score: Number.isFinite(score) ? score : 10,
+      element: null,
+      at: Date.now()
+    };
+
+    scheduleScan(5);
+  }
+
+  function waitForBody() {
+    if (document.body) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const onReady = () => {
+        if (document.body) {
+          document.removeEventListener("DOMContentLoaded", onReady);
+          resolve();
+        }
+      };
+
+      document.addEventListener("DOMContentLoaded", onReady);
+    });
+  }
+
+  function captureMutationCandidate(records) {
+    let best = null;
+
+    for (const record of records) {
+      const candidate = getCandidateFromMutation(record);
+      if (!candidate) {
+        continue;
+      }
+
+      if (!best || candidate.score > best.score) {
+        best = candidate;
+      }
+    }
+
+    if (best) {
+      state.mutationCandidate = {
+        chunk: best.chunk,
+        score: best.score + 3,
+        element: best.element,
+        at: Date.now()
+      };
+    }
+  }
+
+  function getCandidateFromMutation(record) {
+    if (record.type === "characterData") {
+      const element = record.target.parentElement;
+      if (!(element instanceof HTMLElement) || !isElementVisible(element)) {
+        return null;
+      }
+      const chunk = sanitizeChunk(record.target.nodeValue) || bestChunkToken(record.target.nodeValue);
+      if (!chunk) {
+        return null;
+      }
+      return { chunk, score: scoreCandidate(element, chunk), element };
+    }
+
+    if (record.type === "attributes") {
+      const element = record.target;
+      if (!(element instanceof HTMLElement) || !isElementVisible(element)) {
+        return null;
+      }
+
+      const values = [element.textContent || ""];
+      if (record.attributeName) {
+        values.push(element.getAttribute(record.attributeName) || "");
+      }
+
+      for (const value of values) {
+        const chunk = sanitizeChunk(value) || bestChunkToken(value);
+        if (chunk) {
+          return { chunk, score: scoreCandidate(element, chunk), element };
+        }
+      }
+
+      return null;
+    }
+
+    if (record.type === "childList") {
+      for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement)) {
+          continue;
+        }
+
+        const element = node;
+        if (!isElementVisible(element)) {
+          continue;
+        }
+
+        const chunk = sanitizeChunk(element.textContent) || bestChunkToken(element.textContent);
+        if (!chunk) {
+          continue;
+        }
+
+        return { chunk, score: scoreCandidate(element, chunk), element };
+      }
+    }
+
+    return null;
+  }
+
+  function bestChunkToken(text) {
+    if (!text) {
+      return "";
+    }
+
+    const matches = text.toLowerCase().match(/[a-z]{1,4}/g);
+    if (!matches || matches.length === 0) {
+      return "";
+    }
+
+    matches.sort((a, b) => b.length - a.length);
+    for (const token of matches) {
+      if (/^[a-z]{1,4}$/.test(token)) {
+        return token;
+      }
     }
 
     return "";
   }
 
+  function pickBestCandidate(candidates) {
+    const valid = candidates.filter(Boolean);
+    if (valid.length === 0) {
+      return null;
+    }
+    valid.sort((a, b) => b.score - a.score);
+    return valid[0];
+  }
+
+  function readLockedChunkCandidate() {
+    const element = state.lockedChunkElement;
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    if (!element.isConnected || !isElementVisible(element)) {
+      return null;
+    }
+
+    const chunk = sanitizeChunk(element.textContent);
+    if (!chunk) {
+      return null;
+    }
+
+    return {
+      chunk,
+      score: scoreCandidate(element, chunk) + 2.3,
+      element
+    };
+  }
+
   function findDirectElementCandidate() {
+    const exactSyllable = readExactSyllableCandidate();
+    if (exactSyllable) {
+      return exactSyllable;
+    }
+
     const selectors = [
       "[class*='syll']",
       "[class*='chunk']",
@@ -376,7 +888,7 @@
         const text = sanitizeChunk(node.textContent);
         if (text) {
           const score = scoreCandidate(node, text) + 0.9;
-          candidates.push({ chunk: text, score });
+          candidates.push({ chunk: text, score, element: node });
         }
       }
     }
@@ -387,6 +899,24 @@
 
     candidates.sort((a, b) => b.score - a.score);
     return candidates[0];
+  }
+
+  function readExactSyllableCandidate() {
+    const element = document.querySelector(".syllable");
+    if (!(element instanceof HTMLElement) || !isElementVisible(element)) {
+      return null;
+    }
+
+    const chunk = sanitizeChunk(element.textContent) || bestChunkToken(element.textContent);
+    if (!chunk) {
+      return null;
+    }
+
+    return {
+      chunk,
+      score: scoreCandidate(element, chunk) + 5,
+      element
+    };
   }
 
   function findBestTextCandidate() {
@@ -414,7 +944,7 @@
         continue;
       }
 
-      candidates.push({ chunk, score });
+      candidates.push({ chunk, score, element: parent });
     }
 
     if (candidates.length === 0) {
@@ -471,6 +1001,9 @@
     if (cy > window.innerHeight * 0.15 && cy < window.innerHeight * 0.85) {
       zoneWeight += 0.25;
     }
+    if (cy > window.innerHeight * 0.12 && cy < window.innerHeight * 0.65) {
+      zoneWeight += 0.35;
+    }
 
     const styles = getComputedStyle(element);
     const fontSize = Number.parseFloat(styles.fontSize) || 12;
@@ -499,6 +1032,9 @@
       if (/(chat|log|stats|table|settings|sidebar|history|score)/.test(names)) {
         contextPenalty -= 1.2;
       }
+      if (/(timer|time|round|room|nickname|player|author)/.test(names)) {
+        contextPenalty -= 0.8;
+      }
     }
 
     return centerWeight + zoneWeight + sizeWeight + classWeight + lengthWeight + contextPenalty;
@@ -522,7 +1058,15 @@
     }
 
     return pool
-      .filter((word) => word.length >= minWordLength && word.includes(needle))
+      .filter((word) => {
+        if (word.length < minWordLength || !word.includes(needle)) {
+          return false;
+        }
+        if (!state.settings.filterUsedWords) {
+          return true;
+        }
+        return !state.usedWords.has(word);
+      })
       .sort((a, b) => {
         const lenDiff = a.length - b.length;
         if (lenDiff !== 0) {
@@ -658,5 +1202,17 @@
     } catch (error) {
       return false;
     }
+  }
+
+  function getExtensionStorage() {
+    if (typeof chrome !== "undefined" && chrome?.storage?.local) {
+      return chrome.storage.local;
+    }
+
+    if (typeof browser !== "undefined" && browser?.storage?.local) {
+      return browser.storage.local;
+    }
+
+    return null;
   }
 })();

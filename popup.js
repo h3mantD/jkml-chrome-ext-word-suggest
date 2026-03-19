@@ -1,12 +1,18 @@
 const DEFAULTS = {
   enabled: true,
   panelVisible: false,
+  autoHideOnBlur: true,
+  filterUsedWords: true,
   maxSuggestions: 12,
   minWordLength: 3
 };
 
+const extensionStorage = getExtensionStorage();
+
 const enabledEl = document.getElementById("enabled");
 const panelVisibleEl = document.getElementById("panelVisible");
+const autoHideOnBlurEl = document.getElementById("autoHideOnBlur");
+const filterUsedWordsEl = document.getElementById("filterUsedWords");
 const maxSuggestionsEl = document.getElementById("maxSuggestions");
 const minWordLengthEl = document.getElementById("minWordLength");
 const resetEl = document.getElementById("reset");
@@ -22,6 +28,8 @@ async function init() {
 
   enabledEl.addEventListener("change", saveFromUI);
   panelVisibleEl.addEventListener("change", saveFromUI);
+  autoHideOnBlurEl.addEventListener("change", saveFromUI);
+  filterUsedWordsEl.addEventListener("change", saveFromUI);
   maxSuggestionsEl.addEventListener("change", saveFromUI);
   minWordLengthEl.addEventListener("change", saveFromUI);
 
@@ -34,7 +42,12 @@ async function init() {
 
 function getSettings() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULTS, (result) => {
+    if (!extensionStorage) {
+      resolve({ ...DEFAULTS });
+      return;
+    }
+
+    extensionStorage.get(DEFAULTS, (result) => {
       resolve({ ...DEFAULTS, ...result });
     });
   });
@@ -42,7 +55,12 @@ function getSettings() {
 
 function saveSettings(values) {
   return new Promise((resolve) => {
-    chrome.storage.local.set(values, () => resolve());
+    if (!extensionStorage) {
+      resolve();
+      return;
+    }
+
+    extensionStorage.set(values, () => resolve());
   });
 }
 
@@ -50,6 +68,8 @@ async function saveFromUI() {
   const values = {
     enabled: enabledEl.checked,
     panelVisible: panelVisibleEl.checked,
+    autoHideOnBlur: autoHideOnBlurEl.checked,
+    filterUsedWords: filterUsedWordsEl.checked,
     maxSuggestions: clampNumber(maxSuggestionsEl.value, 1, 50, DEFAULTS.maxSuggestions),
     minWordLength: clampNumber(minWordLengthEl.value, 2, 20, DEFAULTS.minWordLength)
   };
@@ -70,6 +90,8 @@ function clampNumber(value, min, max, fallback) {
 function applyToUI(settings) {
   enabledEl.checked = Boolean(settings.enabled);
   panelVisibleEl.checked = Boolean(settings.panelVisible);
+  autoHideOnBlurEl.checked = Boolean(settings.autoHideOnBlur);
+  filterUsedWordsEl.checked = Boolean(settings.filterUsedWords);
   maxSuggestionsEl.value = String(settings.maxSuggestions);
   minWordLengthEl.value = String(settings.minWordLength);
 }
@@ -81,4 +103,16 @@ function setStatus(message) {
       statusEl.textContent = "";
     }
   }, 1000);
+}
+
+function getExtensionStorage() {
+  if (typeof chrome !== "undefined" && chrome?.storage?.local) {
+    return chrome.storage.local;
+  }
+
+  if (typeof browser !== "undefined" && browser?.storage?.local) {
+    return browser.storage.local;
+  }
+
+  return null;
 }
